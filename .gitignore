@@ -36,6 +36,7 @@ tests/tls/*
 *.dSYM
 Makefile.dep
 .vscode/*
+build/*
 .idea/*
 .ccls
 .ccls-cache/*
