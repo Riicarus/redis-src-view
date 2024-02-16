@@ -1,6 +1,6 @@
-# Redis Data Types
+# Redis 数据类型
 
-redis data types include 5 different types.
+redis 有 5 种不同的数据类型, 用作 redis 存储数据的主要类型.
 
 - String
 - List
@@ -12,7 +12,7 @@ redis data types include 5 different types.
 
 > See: BookMark-ROBJ
 
-definition:
+`redisObject` 是 redis 数据的一个抽象结构, redis 的各种对数据的操作也是基于此的, 其定义如下:
 
 ```c
 #define LRU_BITS 24
@@ -29,20 +29,22 @@ struct redisObject {
 
 ```
 
-The upper code uses C's bit-fields to designate the number of bits occupied by the field. It mainly defines the `type` and `encoding` of one `redisObject`, and maintains a pointer to the distinct redis data type.
+上述代码利用 C 语言的位域(bit-fields)来指定不同字段占用的比特位, 来使数据在内存/磁盘中存储得更紧凑, 提高效率.
 
-The `type` field has 5 values mapped to 5 kinds of redis data types:
+`redisObject` 主要定义了数据的类型 `type` 和编码 `encoding`, 以及指向具体数据的指针 `void *ptr`, 使用 `void *` 定义使得指针支持指向多种类型的数据, 并且可以根据 `type` 以及 `encoding` 确定其实际类型.
+
+`type` 字段是 5 种 redis 数据类型的具体映射:
 
 ```c
 /* The actual redis object */
 #define OBJ_STRING 0    /* String object. */
 #define OBJ_LIST 1      /* List object. */
-#define OBJ_SET 2       /* Set object. */q
+#define OBJ_SET 2       /* Set object. */
 #define OBJ_ZSET 3      /* Sorted set object. */
 #define OBJ_HASH 4      /* Hash object. */
 ```
 
-The `encoding` field more basically describes how the redis data type is stored.
+`encoding` 字段更详尽地描述了 redis 数据类型是如何存储的, 也就是数据结构的具体实现.
 
 ```c
 /* Objects encoding. Some kind of objects like Strings and Hashes can be
@@ -62,19 +64,37 @@ The `encoding` field more basically describes how the redis data type is stored.
 #define OBJ_ENCODING_LISTPACK 11 /* Encoded as a listpack */
 ```
 
+---
+
+`redisObject` 的创建如下:
+
+```c
+robj *createObject(int type, void *ptr) {
+    robj *o = zmalloc(sizeof(*o));
+    o->type = type;
+    o->encoding = OBJ_ENCODING_RAW;
+    o->ptr = ptr;
+    o->refcount = 1;
+    o->lru = 0;
+    return o;
+}
+```
+
+可以看到, `redisObject` 的默认编码是 `OBJ_ENCODING_RAW`.
+
 ## String
 
-String in redis has 3 encoding implementations:
+Redis 的字符串类型有 3 中不同的实现:
 
-- `OBJ_ENCODING_INT`: stores integer value
-- `OBJ_ENCODING_RAW`: stores char sequence value which is longer than 44 bytes
-- `OBJ_ENCODING_EMBSTR`: stores float value
+- `OBJ_ENCODING_INT`: 存储整数类型
+- `OBJ_ENCODING_EMBSTR`: 存储长度不超过的 44 bytes 的字符串, 以及浮点数类型
+- `OBJ_ENCODING_RAW`: 存储长度超过 44 bytes 的字符串
 
 ### INT
 
 > See: BookMark-LL2STR
 
-When the encoding of String is `OBJ_ENCODING_INT`, the field `*ptr` directly stores the integer value.
+当 `encoding` 为 `OBJ_ENCODING_INT` 时, `ptr` 指针直接指向具体的整数值.
 
 ```c
 if ((value >= LONG_MIN && value <= LONG_MAX) && flag != LL2STROBJ_NO_INT_ENC) {
@@ -85,17 +105,19 @@ if ((value >= LONG_MIN && value <= LONG_MAX) && flag != LL2STROBJ_NO_INT_ENC) {
 }
 ```
 
-There's an optimization for integer value between `0` and `10000`, redis stores them to a shared redis object array `shared.integers[]` to avoid frequently create the same redis objects.
+这里对整数的存储有一个优化: 在创建 `redisObject` 之前, 先判断要存储的整数的值, 如果整数值在 `0~10000` 之间, redis 会将其 `redisObject` 指向缓存(共享数组 `shares.integers[]`)中预先创建的对象, 以此避免高频使用对象的重复创建, 节约内存, 提高性能.
 
 ```c
+#define OBJ_SHARED_INTEGERS 10000
+
 if (value >= 0 && value < OBJ_SHARED_INTEGERS && flag == LL2STROBJ_AUTO) {
     o = shared.integers[value];
 }
 ```
 
-> Java Static Constant Pool also uses the same optimization for integer values and String values to provide higher performance.
+> Java 的静态常量池也使用了类似的优化方式, 对 `Integer` 和 `String` 类型进行缓存优化.
 
-The `flag` shows how to create a string object from a `long long` value.
+`flag` 字段定义了为 `long long` 类型值创建 `redisObject` 的方式.
 
 ```c
 /* Create a string object from a long long value according to the specified flag. */
@@ -104,11 +126,11 @@ The `flag` shows how to create a string object from a `long long` value.
 #define LL2STROBJ_NO_INT_ENC 2 /* disallow integer encoded objects. */
 ```
 
-We should mention that not all integer value will be encoded as `OBJ_ENCODING_INT`, if the value is too long or the server is in `LL2STROBJ_NO_INT_ENC` mode, it will be encoded as `OBJ_ENCODING_RAW` or `OBJ_ENCODING_EMBSTR` according to its length.
+需要注意的是: 不是所有的整数类型都使用 `OBJ_ENCODING_INT` 编码. 如果其值太大, 或者 redis 处于 `LL2STROBJ_NO_INT_ENC` 模式, 那么可能会根据其长度决定使用 `OBJ_ENCODING_RAW` 或者 `OBJ_ENCODING_EMBSTR` 编码.
 
 ---
 
-So the only limits between `OBJ_ENCODING_EMBSTR` and `OBJ_ENCODING_RAW` is the value's length.
+可以看出, 使用 `OBJ_ENCODING_EMBSTR` 和 `OBJ_ENCODING_RAW` 唯一不同的条件就是需要保存的值的长度.
 
 > See: BookMark-EMBSTR/ROW
 
@@ -130,4 +152,152 @@ robj *createStringObject(const char *ptr, size_t len) {
 
 ### EMBSTR
 
+同 `OBJ_ENCODING_RAW` 相比, `OBJ_ENCODING_EMBSTR` 同样使用 `char[]` 进行存储, 但是其长度是不可变的.
+
+```c
+struct __attribute__ ((__packed__)) sdshdr8 {
+    uint8_t len; /* used */
+    uint8_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+
+/* Create a string object with encoding OBJ_ENCODING_EMBSTR, that is
+ * an object where the sds string is actually an unmodifiable string
+ * allocated in the same chunk as the object itself. */
+robj *createEmbeddedStringObject(const char *ptr, size_t len) {
+    robj *o = zmalloc(sizeof(robj)+sizeof(struct sdshdr8)+len+1);
+    struct sdshdr8 *sh = (void*)(o+1);
+
+    o->type = OBJ_STRING;
+    o->encoding = OBJ_ENCODING_EMBSTR;
+    o->ptr = sh+1;
+    o->refcount = 1;
+    o->lru = 0;
+
+    sh->len = len;
+    sh->alloc = len;
+    sh->flags = SDS_TYPE_8;
+    if (ptr == SDS_NOINIT)
+        sh->buf[len] = '\0';
+    else if (ptr) {
+        memcpy(sh->buf,ptr,len);
+        sh->buf[len] = '\0';
+    } else {
+        memset(sh->buf,0,len+1);
+    }
+    return o;
+}
+```
+
+从代码中看出, `o.ptr` 指向字符数组, 这里的字符串没有使用 SDS, 而是直接使用 C 中的字符串, 以 `\0` 结尾, 长度不可变.
+
 ### RAW
+
+`OBJ_ENCODING_RAW` 类型使用 SDS(Simple Dynamic String) 作为数据存储结构, SDS 是"动态"的字符串类型, 其长度是可变的, 便于支持对字符串的修改操作.
+
+```c
+/* Create a string object with encoding OBJ_ENCODING_RAW, that is a plain
+ * string object where o->ptr points to a proper sds string. */
+robj *createRawStringObject(const char *ptr, size_t len) {
+    return createObject(OBJ_STRING, sdsnewlen(ptr,len));
+}
+```
+
+### SDS
+
+SDS 的定义很简单, 就是一个 `char` 数组.
+
+```c
+typedef char *sds;
+```
+
+SDS 的创建是通过 `sdsnewlen(const char *ptr, size_t len)` 创建的, 实际会调用 `_sdsnewlen(const char *ptr, size_t len, int trymalloc)` 进行创建.
+
+```c
+sds sdsnewlen(const void *init, size_t initlen) {
+    return _sdsnewlen(init, initlen, 0);
+}
+```
+
+redis 会根据 `initlen`, 也就是需要存储的字符串的长度决定使用那一种类型的 SDS, 再根据类型获取 `hdrlen`, 也就是 `sdshdr` 的长度. 之后, 就会根据 `initlen` 和 `sdshdr` 为 SDS 申请一块内存, 并且依据 `init` 判断是否需要对申请到的内存进行初始化.
+
+```c
+/* Create a new sds string with the content specified by the 'init' pointer
+ * and 'initlen'.
+ * If NULL is used for 'init' the string is initialized with zero bytes.
+ * If SDS_NOINIT is used, the buffer is left uninitialized;
+ *
+ * The string is always null-terminated (all the sds strings are, always) so
+ * even if you create an sds string with:
+ *
+ * my_string = sdsnewlen("abc",3);
+ *
+ * You can print the string with printf() as there is an implicit \0 at the
+ * end of the string. However the string is binary safe and can contain
+ * \0 characters in the middle, as the length is stored in the sds header. */
+sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
+    void *sh;
+    sds s;
+    char type = sdsReqType(initlen);
+    /* Empty strings are usually created in order to append. Use type 8
+     * since type 5 is not good at this. */
+    if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+    int hdrlen = sdsHdrSize(type);
+    unsigned char *fp; /* flags pointer. */
+    size_t usable;
+
+    assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow */
+    sh = trymalloc?
+        s_trymalloc_usable(hdrlen+initlen+1, &usable) :
+        s_malloc_usable(hdrlen+initlen+1, &usable);
+    if (sh == NULL) return NULL;
+    if (init==SDS_NOINIT)
+        init = NULL;
+    else if (!init)
+        memset(sh, 0, hdrlen+initlen+1);
+    s = (char*)sh+hdrlen;
+    fp = ((unsigned char*)s)-1;
+    usable = usable-hdrlen-1;
+    if (usable > sdsTypeMaxSize(type))
+        usable = sdsTypeMaxSize(type);
+    switch(type) {
+        case SDS_TYPE_5: {
+            *fp = type | (initlen << SDS_TYPE_BITS);
+            break;
+        }
+        case SDS_TYPE_8: {
+            SDS_HDR_VAR(8,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_16: {
+            SDS_HDR_VAR(16,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_32: {
+            SDS_HDR_VAR(32,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_64: {
+            SDS_HDR_VAR(64,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+    }
+    if (initlen && init)
+        memcpy(s, init, initlen);
+    s[initlen] = '\0';
+    return s;
+}
+```

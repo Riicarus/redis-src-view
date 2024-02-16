@@ -1,6 +1,6 @@
 /* Redis Object implementation.
  *
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2009-2012, Salvatore Sanfilippo<antirez at gmail dot com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -80,12 +80,14 @@ robj *makeObjectShared(robj *o) {
     return o;
 }
 
+ // MARK: RAW
 /* Create a string object with encoding OBJ_ENCODING_RAW, that is a plain
  * string object where o->ptr points to a proper sds string. */
 robj *createRawStringObject(const char *ptr, size_t len) {
     return createObject(OBJ_STRING, sdsnewlen(ptr,len));
 }
 
+// MARK: EMBSTR
 /* Create a string object with encoding OBJ_ENCODING_EMBSTR, that is
  * an object where the sds string is actually an unmodifiable string
  * allocated in the same chunk as the object itself. */
@@ -120,7 +122,7 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
  * The current limit of 44 is chosen so that the biggest string object
  * we allocate as EMBSTR will still fit into the 64 byte arena of jemalloc. */
 #define OBJ_ENCODING_EMBSTR_SIZE_LIMIT 44
-// MARK:EMBSTR/RAW
+// MARK: EMBSTR/RAW
 robj *createStringObject(const char *ptr, size_t len) {
     if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT)
         return createEmbeddedStringObject(ptr,len);
@@ -147,7 +149,7 @@ robj *tryCreateStringObject(const char *ptr, size_t len) {
 #define LL2STROBJ_AUTO 0       /* automatically create the optimal string object */
 #define LL2STROBJ_NO_SHARED 1  /* disallow shared objects */
 #define LL2STROBJ_NO_INT_ENC 2 /* disallow integer encoded objects. */
-// MARK:LL2STR
+// MARK: LL2STR
 robj *createStringObjectFromLongLongWithOptions(long long value, int flag) {
     robj *o;
 
@@ -1237,14 +1239,11 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
     if (server.aof_state != AOF_OFF) {
         mem += sdsZmallocSize(server.aof_buf);
     }
-    mh->aof_buffer = mem;
-    mem_total+=mem;
+    mh->aof_buffer = mem; mem_total+=mem;
 
     mem = evalScriptsMemory();
-    mh->lua_caches = mem;
-    mem_total+=mem;
-    mh->functions_caches = functionsMemoryOverhead();
-    mem_total+=mh->functions_caches;
+    mh->lua_caches = mem; mem_total+=mem;
+    mh->functions_caches = functionsMemoryOverhead(); mem_total+=mh->functions_caches;
 
     for (j = 0; j < server.dbnum; j++) {
         redisDb *db = server.db+j;
@@ -1257,12 +1256,10 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
 
         mem = kvstoreMemUsage(db->keys) +
               keyscount * sizeof(robj);
-        mh->db[mh->num_dbs].overhead_ht_main = mem;
-        mem_total+=mem;
+        mh->db[mh->num_dbs].overhead_ht_main = mem; mem_total+=mem;
 
         mem = kvstoreMemUsage(db->expires);
-        mh->db[mh->num_dbs].overhead_ht_expires = mem;
-        mem_total+=mem;
+        mh->db[mh->num_dbs].overhead_ht_expires = mem; mem_total+=mem;
 
         mh->num_dbs++;
     }
@@ -1452,7 +1449,7 @@ robj *objectCommandLookupOrReply(client *c, robj *key, robj *reply) {
 }
 
 /* Object command allows to inspect the internals of a Redis Object.
- * Usage: OBJECT <refcount|encoding|idletime|freq> <key> */
+ * Usage: OBJECT <refcount|encoding|idletime|freq><key> */
 void objectCommand(client *c) {
     robj *o;
 
