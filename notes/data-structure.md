@@ -220,7 +220,9 @@ sds sdsnewlen(const void *init, size_t initlen) {
 }
 ```
 
-redis 会根据 `initlen`, 也就是需要存储的字符串的长度决定使用那一种类型的 SDS, 再根据类型获取 `hdrlen`, 也就是 `sdshdr` 的长度. 之后, 就会根据 `initlen` 和 `sdshdr` 为 SDS 申请一块内存, 并且依据 `init` 判断是否需要对申请到的内存进行初始化.
+redis 会根据 `initlen`, 也就是需要存储的字符串的长度决定使用那一种类型的 SDS, 再根据类型获取 `hdrlen`, 也就是 `sdshdr` 的 header 的长度. 之后, 就会根据 `initlen` 和 `hdrlen` 为 SDS 申请一块内存, 并且依据 `init` 判断是否需要对申请到的内存进行初始化, `init` 是需要存储的字符串指针.
+
+如果指定不初始化 SDS, 也就是 `init == SDS_NOINIT`, 或者无法分配足够的空间, `_sdsnewlen` 函数会直接返回一个空指针 `(void *)0`; 如果字符串为空串, 也就是 `init = (void *)0`, 则直接初始化为 0 字节的串.
 
 ```c
 /* Create a new sds string with the content specified by the 'init' pointer
@@ -239,15 +241,26 @@ redis 会根据 `initlen`, 也就是需要存储的字符串的长度决定使�
 sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
     void *sh;
     sds s;
+
+    // 拿到应该初始化的类型
     char type = sdsReqType(initlen);
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
     if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+
+    // 拿到对应的 sds_header 的长度
     int hdrlen = sdsHdrSize(type);
+
+    // 标识位指针标识 sds 的类型 type
+    // 标识位指针在 sds_header 的最后一个字节
     unsigned char *fp; /* flags pointer. */
+    // 可用空间大小, sh 大小 -> sds 大小
     size_t usable;
 
     assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow */
+
+    // 为 sh 申请内存空间
+    // 需要为字符串设置终结符 '\0', 所以申请内存的大小为 hdrlen + initlen + 1
     sh = trymalloc?
         s_trymalloc_usable(hdrlen+initlen+1, &usable) :
         s_malloc_usable(hdrlen+initlen+1, &usable);
@@ -256,11 +269,19 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
         init = NULL;
     else if (!init)
         memset(sh, 0, hdrlen+initlen+1);
+
+    // sds 的起始位置, sh 的结构: sds_header(hdrlen) | sds(initlen)
     s = (char*)sh+hdrlen;
+    // flag 始终在最后一个字节
     fp = ((unsigned char*)s)-1;
+    // 更新可用空间为 sds 长度
     usable = usable-hdrlen-1;
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+
+    // 根据初始化类型初始化 sh
+    // 通过 SDS_HDR_VAR(T, s) 创建新的 sh 指针, 指向上面创建的 sh 的地址, 并且更新 sh 的字段
+    // 初始化时, alloc 和 len 应该是相等的?
     switch(type) {
         case SDS_TYPE_5: {
             *fp = type | (initlen << SDS_TYPE_BITS);
@@ -295,9 +316,32 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
             break;
         }
     }
+
+    // 复制要存储的字符串值到 sds 中
     if (initlen && init)
         memcpy(s, init, initlen);
     s[initlen] = '\0';
+
+    // 返回的是 sds 的指针, 而不是 sh, 后续通过 SDS_HDR(T, s) 获取指向 sh 的指针
     return s;
 }
 ```
+
+`sh` 的类型就是 `sdshdr` 结构体, 理解为 "SDS with header", 主要存储了 SDS 需要的所有信息, 以 `sdshdr8` 举例:
+
+```c
+struct __attribute__ ((__packed__)) sdshdr8 {
+    // 已使用的空间
+    uint8_t len; /* used */
+    // 申请到的空间
+    uint8_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    // 字符数组
+    char buf[];
+};
+```
+
+内存结构如下:
+
+- `sds_header`: `len | alloc | flag(1)`
+- `sdshdr`: `sds_header(hdrlen) | buffer(initlen)`
