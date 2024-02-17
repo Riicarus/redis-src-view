@@ -212,6 +212,21 @@ SDS 的定义很简单, 就是一个 `char` 数组.
 typedef char *sds;
 ```
 
+但它不是 SDS 的完整表示, 而只是 SDS 的字符串数组部分, 完整的 SDS 在 redis 中是通过 `sdshdr` 结构体表示的, 理解为 "SDS with header", 主要存储了 SDS 需要的所有信息, 以 `sdshdr8` 举例:
+
+```c
+struct __attribute__ ((__packed__)) sdshdr8 {
+    // 已使用的空间
+    uint8_t len; /* used */
+    // 申请到的空间, 剩余空间 = alloc - len
+    uint8_t alloc; /* excluding the header and null terminator */
+    // SDS 类型
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    // 字符数组
+    char buf[];
+};
+```
+
 SDS 的创建是通过 `sdsnewlen(const char *ptr, size_t len)` 创建的, 实际会调用 `_sdsnewlen(const char *ptr, size_t len, int trymalloc)` 进行创建.
 
 ```c
@@ -239,6 +254,7 @@ redis 会根据 `initlen`, 也就是需要存储的字符串的长度决定使�
  * end of the string. However the string is binary safe and can contain
  * \0 characters in the middle, as the length is stored in the sds header. */
 sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
+    // `sh` 的类型就是 sdshdr 结构体
     void *sh;
     sds s;
 
@@ -327,21 +343,65 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
 }
 ```
 
-`sh` 的类型就是 `sdshdr` 结构体, 理解为 "SDS with header", 主要存储了 SDS 需要的所有信息, 以 `sdshdr8` 举例:
-
-```c
-struct __attribute__ ((__packed__)) sdshdr8 {
-    // 已使用的空间
-    uint8_t len; /* used */
-    // 申请到的空间
-    uint8_t alloc; /* excluding the header and null terminator */
-    unsigned char flags; /* 3 lsb of type, 5 unused bits */
-    // 字符数组
-    char buf[];
-};
-```
-
 内存结构如下:
 
 - `sds_header`: `len | alloc | flag(1)`
 - `sdshdr`: `sds_header(hdrlen) | buffer(initlen)`
+
+---
+
+我们看一看 redis 是如何通过 SDS 指针获取到整个 SDS 的属性的.
+
+```c
+#define SDS_HDR_VAR(T,s) struct sdshdr##T *sh = (void*)((s)-(sizeof(struct sdshdr##T)));
+
+#define SDS_HDR(T,s) ((struct sdshdr##T *)((s)-(sizeof(struct sdshdr##T))))
+
+#define SDS_TYPE_5_LEN(f) ((f)>>SDS_TYPE_BITS)
+
+// 使用 inline 在执行时将函数展开, 避免创建过多的栈空间
+// 获取 sds 的长度
+static inline size_t sdslen(const sds s) {
+    unsigned char flags = s[-1];
+    switch(flags&SDS_TYPE_MASK) {
+        case SDS_TYPE_5:
+            return SDS_TYPE_5_LEN(flags);
+        case SDS_TYPE_8:
+            return SDS_HDR(8,s)->len;
+        case SDS_TYPE_16:
+            return SDS_HDR(16,s)->len;
+        case SDS_TYPE_32:
+            return SDS_HDR(32,s)->len;
+        case SDS_TYPE_64:
+            return SDS_HDR(64,s)->len;
+    }
+    return 0;
+}
+
+// 获取 sds 的可用空间
+static inline size_t sdsavail(const sds s) {
+    unsigned char flags = s[-1];
+    switch(flags&SDS_TYPE_MASK) {
+        case SDS_TYPE_5: {
+            return 0;
+        }
+        case SDS_TYPE_8: {
+            SDS_HDR_VAR(8,s);
+            return sh->alloc - sh->len;
+        }
+        case SDS_TYPE_16: {
+            SDS_HDR_VAR(16,s);
+            return sh->alloc - sh->len;
+        }
+        case SDS_TYPE_32: {
+            SDS_HDR_VAR(32,s);
+            return sh->alloc - sh->len;
+        }
+        case SDS_TYPE_64: {
+            SDS_HDR_VAR(64,s);
+            return sh->alloc - sh->len;
+        }
+    }
+    return 0;
+}
+```
