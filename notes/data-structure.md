@@ -19,7 +19,8 @@ redis 有 5 种不同的数据类型, 用作 redis 存储数据的主要类型.
 
 struct redisObject {
     unsigned type:4;
-    unsigned encoding:4;c
+    unsigned encoding:4;
+
     unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
                             * and most significant 16 bits access time). */
@@ -205,6 +206,8 @@ robj *createRawStringObject(const char *ptr, size_t len) {
 ```
 
 ### SDS
+
+关于 SDS 的定义和方法, 都在 `sds.h` 和 `sds.c` 中.
 
 SDS 的定义很简单, 就是一个 `char` 数组.
 
@@ -405,3 +408,26 @@ static inline size_t sdsavail(const sds s) {
     return 0;
 }
 ```
+
+---
+
+由于 SDS 的预分配空间(`char buf[]`)不会自动释放, 而是采用惰性释放的策略, 使得 SDS 在存储不同长度的字符串时能够减少内存重分配的次数, 如: 开始存储的字符串 `msg` 为 `hello world`, 我们将 `msg` 更改为 `hello`, 此时就会剩余 6 字节的可用空间, 如果再次将其改为 `hello java`, 就不需要重新为 `msg` 分配内存.
+
+并且, 由于 SDS 是通过 `len` 来判断字符串终结位置的, 因此不会受到 `\0` 的影响, 因此可以支持更多种编码类型的数据. 同时, 由于为 SDS 在结尾处添加了 `\0`, 它也能很好地兼容 C 字符串的各种操作.
+
+SDS 记录了使用空间和剩余空间, 使得其能够在常数时间复杂度下获取到字符串长度等信息, 而不用去遍历整个字符串. 每次在更新 SDS 前, 都会判断空间是否足够, 如果不足会先重新申请空间, 因此不会存在 C 中的缓冲区溢出导致污染其他数据的情况.
+
+所以 SDS 具有以下特点:
+
+1. 常数时间复杂度获取长度
+2. 避免缓冲区溢出
+3. 减少字符串修改时导致的内存重分配次数
+4. 二进制安全
+5. 兼容 C 字符串函数
+
+## List
+
+redis 的 List 有两种编码方式:
+
+- `OBJ_ENCODING_LISTPACK`
+- `OBJ_ENCODING_QUICKLIST`
